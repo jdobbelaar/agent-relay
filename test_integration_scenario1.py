@@ -5,6 +5,9 @@ sender reads the result. Unlike test_agent_relay.py, this starts a real uvicorn
 process against a real PostgreSQL database (a throwaway one created for the
 run) and talks to it over HTTP, so the whole stack (server, routes, auth,
 database, lease recovery loop) is exercised.
+
+Set RELAY_TEST_BASE_URL to run the same flow against an API that is already
+running instead, such as the Kubernetes deployment.
 """
 
 from __future__ import annotations
@@ -52,7 +55,16 @@ def database_url():
 
 
 @pytest.fixture(scope="module")
-def base_url(database_url):
+def base_url(request):
+    external = os.getenv("RELAY_TEST_BASE_URL")
+    if external:
+        # Test an API that is already running (for example the Kubernetes
+        # deployment behind `kubectl port-forward`). It registers new agents
+        # there, so use a disposable environment.
+        assert httpx.get(f"{external}/ready", timeout=5).status_code == 200
+        yield external.rstrip("/")
+        return
+    database_url = request.getfixturevalue("database_url")
     log_path = Path(tempfile.mkdtemp()) / "server.log"
     port = free_port()
     env = {**os.environ, "RELAY_DATABASE_URL": database_url}

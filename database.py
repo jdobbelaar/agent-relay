@@ -139,7 +139,11 @@ class Attempt(Base):
     task: Mapped[Task] = relationship("Task", back_populates="attempts")
 
 
-engine: Engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True)
+# connect_timeout: fail fast when PostgreSQL is unreachable instead of hanging
+# on the operating system's much longer TCP timeout.
+engine: Engine = create_engine(
+    DATABASE_URL, future=True, pool_pre_ping=True, connect_args={"connect_timeout": 5}
+)
 
 SessionLocal = sessionmaker(bind=engine, class_=Session, expire_on_commit=False, autoflush=True)
 

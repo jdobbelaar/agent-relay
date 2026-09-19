@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  namespace: agent-relay
+data:
+  # Runs once, when the data volume is first initialized. relay_test is the
+  # scratch database the test suite uses; it must stay separate from "relay".
+  01-test-database.sql: |
+    CREATE DATABASE relay_test;
+---
+# Client Service: the API reaches the database at postgres:5432.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: agent-relay
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# Headless Service giving the StatefulSet a stable identity.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-headless
+  namespace: agent-relay
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: agent-relay
+spec:
+  serviceName: postgres-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: agent-relay-db
+          env:
+            # The volume root contains lost+found, which initdb rejects, so
+            # keep the cluster in a subdirectory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: initdb
+          configMap:
+            name: postgres-initdb
+  # Persistent storage: one PVC per replica, kept when the pod is replaced.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

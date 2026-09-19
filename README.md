@@ -20,6 +20,24 @@ the `agent-relay_postgres-data` volume, so it survives `docker compose down`
 `POSTGRES_HOST_PORT`, and the credentials with `POSTGRES_USER`,
 `POSTGRES_PASSWORD` and `POSTGRES_DB` (the defaults are for local use only).
 
+On a local Kubernetes cluster (kind), using the manifests in `k8s/`:
+
+```bash
+kind create cluster --name agent-relay
+docker build -t agent-relay:local .
+kind load docker-image agent-relay:local postgres:16-alpine --name agent-relay
+kubectl --context kind-agent-relay apply -k k8s/
+kubectl --context kind-agent-relay -n agent-relay rollout status deploy/agent-relay
+kubectl --context kind-agent-relay -n agent-relay port-forward svc/agent-relay 8090:8000
+```
+
+The dashboard is then at <http://127.0.0.1:8090/> (pick another local port if
+8090 is taken). PostgreSQL runs as a StatefulSet with a 1Gi persistent volume,
+and both workloads have readiness probes. Run the acceptance test against the
+cluster with `RELAY_TEST_BASE_URL=http://127.0.0.1:8090 uv run pytest
+test_integration_scenario1.py`. Tear it down with `kind delete cluster --name
+agent-relay`. `k8s/secret.yaml` holds local-development credentials only.
+
 Or run the API on your machine against that database:
 
 ```bash

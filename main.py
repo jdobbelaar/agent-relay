@@ -151,16 +151,22 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def check_database() -> None:
+    with db_session() as db:
+        # Check real tables, not just connectivity: after a volume wipe
+        # or failed migration the DB can answer SELECT 1 while every
+        # write 500s with "no such table". Missing tables -> 503.
+        db.execute(text("SELECT 1 FROM agents LIMIT 1"))
+        db.execute(text("SELECT 1 FROM tasks LIMIT 1"))
+        db.execute(text("SELECT 1 FROM attempts LIMIT 1"))
+
+
 @app.get("/ready")
 async def ready() -> JSONResponse:
     try:
-        with db_session() as db:
-            # Check real tables, not just connectivity: after a volume wipe
-            # or failed migration the DB can answer SELECT 1 while every
-            # write 500s with "no such table". Missing tables -> 503.
-            db.execute(text("SELECT 1 FROM agents LIMIT 1"))
-            db.execute(text("SELECT 1 FROM tasks LIMIT 1"))
-            db.execute(text("SELECT 1 FROM attempts LIMIT 1"))
+        # Off the event loop: a slow or unreachable database must not stop
+        # /health (and every other request) from being answered.
+        await asyncio.to_thread(check_database)
     except Exception:
         return JSONResponse(status_code=503, content={"status": "not_ready"})
     return JSONResponse(status_code=200, content={"status": "ready"})
