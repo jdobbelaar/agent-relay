@@ -38,6 +38,21 @@ cluster with `RELAY_TEST_BASE_URL=http://127.0.0.1:8090 uv run pytest
 test_integration_scenario1.py`. Tear it down with `kind delete cluster --name
 agent-relay`. `k8s/secret.yaml` holds local-development credentials only.
 
+The CI workflow (`.github/workflows/ci.yml`) runs the starter tests and the
+integration test against a PostgreSQL service container. Only if they pass, it
+builds an image tagged `ci-<commit>-<UTC time>`, loads it into the kind cluster,
+points the Deployment at it, and waits for the rollout. Run it locally with
+[act](https://github.com/nektos/act) once the cluster above exists (kind creates
+the `kind` Docker network that `.actrc` attaches the runner to):
+
+```bash
+act push
+```
+
+The deploy job only runs when the `DEPLOY_TO_KIND` variable is `true`, which
+`.actrc` sets, so on GitHub-hosted runners (which have no cluster) only the
+tests run.
+
 Or run the API on your machine against that database:
 
 ```bash

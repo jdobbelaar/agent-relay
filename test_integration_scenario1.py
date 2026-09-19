@@ -171,6 +171,7 @@ def test_scenario_1_two_agents_exchange_task_and_result(base_url):
         # calls it makes as either participant show the finished task.
         page = client.get("/")
         assert page.status_code == 200 and "Agent token" in page.text
+        assert "<h1>Agent Relay v2</h1>" in page.text
         for headers in (sender, recipient):
             agents = client.get("/api/v1/agents?limit=100", headers=headers).json()["items"]
             assert {"alice", "uppercase"} <= {a["name"] for a in agents}

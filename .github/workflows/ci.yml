@@ -1,0 +1,97 @@
+name: CI
+
+# Tests run against PostgreSQL; the image is only built and deployed to the
+# local kind cluster if they pass. The deploy job needs a kind cluster and the
+# Docker socket, so it is skipped unless DEPLOY_TO_KIND=true. That is set by
+# .actrc for local runs: `act` (the cluster's Docker network must exist first,
+# see README).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  KIND_VERSION: v0.33.0
+  KUBECTL_VERSION: v1.37.0
+  KIND_CLUSTER: agent-relay
+  NAMESPACE: agent-relay
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Running the job in a container lets it reach the service below by name
+    # (postgres:5432), on GitHub and under act alike.
+    container: catthehacker/ubuntu:act-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay
+          POSTGRES_DB: relay_test
+        options: >-
+          --health-cmd "pg_isready -U relay -d relay_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      # conftest.py ignores RELAY_DATABASE_URL on purpose; this is the scratch
+      # database the tests may drop and recreate.
+      RELAY_TEST_DATABASE_URL: postgresql+psycopg://relay:relay@postgres:5432/relay_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Starter tests
+        run: uv run pytest -v test_agent_relay.py
+      - name: Integration test (register, exchange a task, check the dashboard)
+        run: uv run pytest -v test_integration_scenario1.py
+
+  deploy:
+    needs: test
+    if: ${{ vars.DEPLOY_TO_KIND == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kind and kubectl
+        run: |
+          curl -fsSLo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          sudo install -m 0755 kind kubectl /usr/local/bin/
+          kind version
+          kubectl version --client
+
+      - name: Build image with a unique tag
+        id: build
+        run: |
+          # Commit plus build time: unique per run, even for repeat runs of one commit.
+          tag="ci-${GITHUB_SHA::7}-$(date -u +%Y%m%d%H%M%S)"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          docker build -t "agent-relay:${tag}" .
+
+      - name: Load image into kind
+        run: kind load docker-image "agent-relay:${{ steps.build.outputs.tag }}" --name "$KIND_CLUSTER"
+
+      - name: Configure kubectl for the kind cluster
+        run: |
+          # The internal kubeconfig addresses the API server by its container name,
+          # which resolves because the job runs on kind's Docker network.
+          kind get kubeconfig --name "$KIND_CLUSTER" --internal > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Deploy
+        run: kubectl -n "$NAMESPACE" set image deployment/agent-relay api="agent-relay:${{ steps.build.outputs.tag }}"
+
+      - name: Wait for rollout
+        run: kubectl -n "$NAMESPACE" rollout status deployment/agent-relay --timeout=180s
+
+      - name: Show what is running
+        run: |
+          kubectl -n "$NAMESPACE" get pods -l app=agent-relay -o wide
+          kubectl -n "$NAMESPACE" get deployment agent-relay -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
