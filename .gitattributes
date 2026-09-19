@@ -1,0 +1,2 @@
+# Store and check out LF everywhere; the app targets Linux containers.
+* text=auto eol=lf
