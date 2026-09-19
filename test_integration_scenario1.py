@@ -2,8 +2,9 @@
 
 Register two agents. One sends a task; the other claims and completes it; the
 sender reads the result. Unlike test_agent_relay.py, this starts a real uvicorn
-process against a real SQLite file and talks to it over HTTP, so the whole
-stack (server, routes, auth, database, lease recovery loop) is exercised.
+process against a real PostgreSQL database (a throwaway one created for the
+run) and talks to it over HTTP, so the whole stack (server, routes, auth,
+database, lease recovery loop) is exercised.
 """
 
 from __future__ import annotations
@@ -12,11 +13,17 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import httpx
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
+
+from conftest import TEST_DATABASE_URL
 
 ROOT = Path(__file__).parent
 
@@ -28,12 +35,29 @@ def free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def base_url(tmp_path_factory):
-    db_path = tmp_path_factory.mktemp("relay") / "integration.db"
+def database_url():
+    """A fresh, empty database on the test server, dropped afterwards."""
+
+    name = f"relay_it_{uuid.uuid4().hex[:12]}"
+    admin_url = make_url(TEST_DATABASE_URL)
+    admin = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{name}"'))
+    try:
+        yield admin_url.set(database=name).render_as_string(hide_password=False)
+    finally:
+        with admin.connect() as conn:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        admin.dispose()
+
+
+@pytest.fixture(scope="module")
+def base_url(database_url):
+    log_path = Path(tempfile.mkdtemp()) / "server.log"
     port = free_port()
-    env = {**os.environ, "RELAY_DATABASE_URL": f"sqlite:///{db_path.as_posix()}"}
+    env = {**os.environ, "RELAY_DATABASE_URL": database_url}
     env.pop("RELAY_ENROLLMENT_SECRET", None)
-    log = (db_path.parent / "server.log").open("w")
+    log = log_path.open("w")
     server = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app", "--port", str(port)],
         cwd=ROOT,
@@ -46,7 +70,7 @@ def base_url(tmp_path_factory):
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if server.poll() is not None:
-                pytest.fail(f"server exited early:\n{(db_path.parent / 'server.log').read_text()}")
+                pytest.fail(f"server exited early:\n{log_path.read_text()}")
             try:
                 if httpx.get(f"{url}/ready", timeout=1).status_code == 200:
                     break

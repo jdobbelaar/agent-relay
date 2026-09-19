@@ -1,0 +1,39 @@
+name: agent-relay
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-relay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-relay}
+      POSTGRES_DB: ${POSTGRES_DB:-relay}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Runs once, when the data volume is first created: adds the relay_test
+      # database used by `pytest` so tests never touch the real one.
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # Published on localhost only, so pytest and psql on your machine can reach
+    # it. 5434 avoids clashing with other local Postgres containers on
+    # 5432/5433; override with POSTGRES_HOST_PORT. Containers in this project
+    # reach it as postgres:5432 and don't need this mapping.
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5434}:5432"
+
+  api:
+    build: .
+    image: agent-relay:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RELAY_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-relay}@postgres:5432/${POSTGRES_DB:-relay}
+    ports:
+      - "${API_HOST_PORT:-8080}:8000"
+
+volumes:
+  postgres-data:

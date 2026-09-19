@@ -12,3 +12,5 @@ __pycache__/
 *.err
 Dockerfile
 .dockerignore
+docker/
+compose.yaml
